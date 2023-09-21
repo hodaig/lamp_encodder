@@ -6,36 +6,45 @@
 // Rotary Encoder Inputs
 #define ENC_PIN_A  2
 #define ENC_PIN_B  3
-#define ENC_SW_PIN 4
+#define ENC_BTN_PIN 4
 
 // Led light output
 #define OUTPUT_PIN 5
 
+// Debug mode
+// #define DEBUG
+
+#ifdef DEBUG
+#  define DEBUG_PRINTLN(_x) Serial.println(_x)
+#  define DEBUG_PRINT(_x)   Serial.print(_x)
+#else
+#  define DEBUG_PRINTLN(_x) do {;} while(0)
+#  define DEBUG_PRINT(_x)   do {;} while(0)
+#endif
+
+/***************************
+ * Globals
+ ***************************/
+int counter = 0;
 
 /***************************
  * Encodder reading
  ***************************/
-// Settings
-#define ENC_MAX_COUNT 30
-#define ENC_MIN_COUNT 0
 
 // >> 00 10 11 01 00
 // << 00 01 11 10 00
-int last_state = 0b00;
-int counter = 0;
-unsigned long lastButtonPress = 0;
+int last_enc_state = 0b00;
 
 void encoderSetup() {
         
   // Set encoder pins as inputs
   pinMode(ENC_PIN_A,INPUT_PULLUP);
   pinMode(ENC_PIN_B,INPUT_PULLUP);
-  pinMode(ENC_SW_PIN, INPUT_PULLUP);
   attachInterrupt(0, encoderChange, CHANGE); // ENC_PIN_A
   attachInterrupt(1, encoderChange, CHANGE); // DT
 
   // Read the initial state
-  last_state = digitalRead(ENC_PIN_A) << 1 | digitalRead(ENC_PIN_B);
+  last_enc_state = digitalRead(ENC_PIN_A) << 1 | digitalRead(ENC_PIN_B);
 }
 
 void encoderLoop() {
@@ -43,144 +52,206 @@ void encoderLoop() {
 }
 
 void encoderChange() {
-  int cur_state = digitalRead(ENC_PIN_A) << 1 | digitalRead(ENC_PIN_B);
+  int cur_enc_state = digitalRead(ENC_PIN_A) << 1 | digitalRead(ENC_PIN_B);
   int dir = 0;
 
-  switch (last_state) {
+  switch (last_enc_state) {
     case 0b00:
-      if (cur_state == 0b10) {
+      if (cur_enc_state == 0b10) {
         dir = +1;
-      } else if (cur_state == 0b01) {
+      } else if (cur_enc_state == 0b01) {
         dir = -1;
       }
     break;
     case 0b10:
-      if (cur_state == 0b11) {
+      if (cur_enc_state == 0b11) {
         dir = +1;
-      } else if (cur_state == 0b00) {
+      } else if (cur_enc_state == 0b00) {
         dir = -1;
       }
     break;
     case 0b11:
-      if (cur_state == 0b01) {
+      if (cur_enc_state == 0b01) {
         dir = +1;
-      } else if (cur_state == 0b10) {
+      } else if (cur_enc_state == 0b10) {
         dir = -1;
       }
     break;
     case 0b01:
-      if (cur_state == 0b00) {
+      if (cur_enc_state == 0b00) {
         dir = +1;
-      } else if (cur_state == 0b11) {
+      } else if (cur_enc_state == 0b11) {
         dir = -1;
       }
     break;
   }
 
 
-  int tmp = counter + dir;
-  if (ENC_MIN_COUNT <= tmp && tmp <= ENC_MAX_COUNT) {
-    counter = tmp;
-  }
+  counter += dir;
 
-#if DEBUG
-  if (last_state != cur_state) {
-    Serial.print(counter);
-    Serial.print(" - ");
-    Serial.println(cur_state);
+  if (last_enc_state != cur_enc_state) {
+    DEBUG_PRINT(counter);
+    DEBUG_PRINT(" - ");
+    DEBUG_PRINTLN(cur_enc_state);
   } else {
     // TODO assert
   }
-#endif
 
-  last_state = cur_state;
-
-    // Read the button state
-  int btnState = digitalRead(ENC_SW_PIN);
-
-  //If we detect LOW signal, button is pressed
-  if (btnState == LOW) {
-    //if 50ms have passed since last LOW pulse, it means that the
-    //button has been pressed, released and pressed again
-    if (millis() - lastButtonPress > 50) {
-      Serial.println("Button pressed!");
-    }
-
-    // Remember last button press event
-    lastButtonPress = millis();
-  }
+  last_enc_state = cur_enc_state;
   
 }
 
 
 /***************************
- * Output calculation - TODO
+ * Output calculation
  ***************************/
-// #define TOTAL_STEPS 50
-// #define MAX_SPEED_STEPS_4_SEC 10000
-// #define MIN_SPEED_STEPS_4_SEC 100
-// #define MAX_SPEED_CHANGE_4_STEP 100
-// #define MIN_SPEED_CHANGE_4_STEP 1
+#define OUTPUT_REFRESH_RATE_MS 100
 
-// int rotationsToDimSteps(int rotations, int d_ms) {
-// 	int speed_sec = 1000 * steps / d_ms;
-// 	if (speed_sec > MAX_SPEED_STEPS_4_SEC) { speed_sec = MAX_SPEED_STEPS_4_SEC; }
-// 	if (speed_sec < MIN_SPEED_STEPS_4_SEC) { speed_sec = MIN_SPEED_STEPS_4_SEC; }
+#define MAX_SPEED_STEPS_4_SEC 50
+#define MIN_SPEED_STEPS_4_SEC 10
+#define MAX_SPEED_CHANGE_4_STEP 30
+#define MIN_SPEED_CHANGE_4_STEP 1
+
+unsigned long lastOutUpdate;
+float         OutValue;
+
+float rotationsToDimSteps(int rotations, int d_ms) {
+  if (0 == d_ms) {
+    d_ms = 1;
+  }
+	long speed_sec = abs(rotations * (1000/ d_ms));
+	if (speed_sec > MAX_SPEED_STEPS_4_SEC) { speed_sec = MAX_SPEED_STEPS_4_SEC; }
+	if (speed_sec < MIN_SPEED_STEPS_4_SEC) { speed_sec = MIN_SPEED_STEPS_4_SEC; }
 	
-// 	int factor = my_map(speed_sec, MIN_SPEED_STEPS_4_SEC, MAX_SPEED_STEPS_4_SEC, MIN_SPEED_CHANGE_4_STEP, MAX_SPEED_CHANGE_4_STEP);
-// 	int change = factor * steps;
+	int factor = map(speed_sec, MIN_SPEED_STEPS_4_SEC, MAX_SPEED_STEPS_4_SEC, MIN_SPEED_CHANGE_4_STEP, MAX_SPEED_CHANGE_4_STEP);
+	float change = factor * rotations;
 	
-// 	return change;
-// }
+	return change;
+}
 
 void outputSetup() {
   pinMode(OUTPUT_PIN, OUTPUT);
   analogWrite(OUTPUT_PIN, 0);
 
-#if DEBUG
+  lastOutUpdate = millis();
+  OutValue      = 0;
+
+#ifdef DEBUG
   pinMode(12, OUTPUT);
-  analogWrite(lightPin, 0);
+  analogWrite(12, 0);
   pinMode(13, OUTPUT);
-  analogWrite(lightPin, 0);
+  analogWrite(13, 0);
 #endif
 }
 
 void outputLoop() {
-  int scaled_counter;
-    
+#ifdef LEGACY_OUT
   if (counter < 10) {
-    scaled_counter = counter;
+    OutValue = counter;
   } else {
-    scaled_counter = map(counter, 10, ENC_MAX_COUNT, 10, 255);
+    OutValue = map(counter, 10, ENC_MAX_COUNT, 10, 255);
   }
-
-#if DEBUG
-  digitalWrite(12, scaled_counter == 0);
-  digitalWrite(13, scaled_counter == 255);
+#else
+  unsigned long d_ms      = (millis() - lastOutUpdate);
+  // TODO - consider to fix the "encoder andvace by 2" in the encodder algorithem
+  int           t_counter = counter / 2; // each physical encodder step produce 2 countable steps
+  if (t_counter && d_ms > OUTPUT_REFRESH_RATE_MS) {
+    lastOutUpdate = millis();
+    counter = 0;
+    DEBUG_PRINT("[");
+    DEBUG_PRINT(OutValue);
+    DEBUG_PRINT("] d_ms = ");
+    DEBUG_PRINT(d_ms);
+    DEBUG_PRINT(" t_counter = ");
+    DEBUG_PRINT(t_counter);
+    DEBUG_PRINT(" rot = ");
+    DEBUG_PRINT(rotationsToDimSteps(t_counter, d_ms));
+    OutValue += rotationsToDimSteps(t_counter, d_ms);
+    DEBUG_PRINT("[");
+    DEBUG_PRINT(OutValue);
+    DEBUG_PRINTLN("]");
+    if (OutValue < 0) {
+      OutValue = 0;
+    } else if (OutValue > 255) {
+      OutValue = 255;
+    }
+  }
 #endif
 
-  analogWrite(OUTPUT_PIN, 1);
+#ifdef DEBUG
+  digitalWrite(12, OutValue == 0);
+  digitalWrite(13, OutValue == 255);
+#endif
+
+  analogWrite(OUTPUT_PIN, OutValue);
 }
 
+
 /***************************
- * Encodder button task - TODO
+ * Encodder button task
  ***************************/
+unsigned long lastBtnPress;
+int           lastBtnRead;
+int           lastBtnState;
+
+void btnSetup() {
+  pinMode(ENC_BTN_PIN, INPUT_PULLUP);
+
+  // Read the initial state
+  lastBtnPress = millis();
+  lastBtnRead  = digitalRead(ENC_BTN_PIN);
+  lastBtnState = digitalRead(ENC_BTN_PIN);
+}
+
+void btnLoop() {
+  // Read the button state
+  int btnState = digitalRead(ENC_BTN_PIN);
+
+  if (btnState != lastBtnRead) {
+    // Remember last button event
+    lastBtnPress = millis();
+    lastBtnRead = btnState;
+  }
+
+  if (millis() - lastBtnPress < 50) {
+    // reed state may be unstable wait to see continuos signal 
+    return;
+  }
+
+  if (lastBtnState != btnState) {
+    // button state has changed
+    if (btnState == LOW) {
+      // pressed
+      DEBUG_PRINTLN("Button pressed!");
+    } else {
+      // Released
+      DEBUG_PRINTLN("Button released!");
+    }
+
+    lastBtnState = btnState;
+  }
+}
 
 /***************************
  * Main
  ***************************/
 void setup() {
+#ifdef DEBUG
   // Setup Serial Monitor
-  Serial.begin(9600);
+  // Serial.begin(9600);
+  Serial.begin(115200);
+#endif
 
   encoderSetup();
-  encoderSetup();
+  outputSetup();
+  btnSetup();
 }
 
 void loop() {
 
   encoderLoop();
   outputLoop();
+  btnLoop();
 
   delay(1);
 }
