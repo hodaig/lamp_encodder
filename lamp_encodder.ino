@@ -4,12 +4,13 @@
  ***************************/
 
 // Rotary Encoder Inputs
-#define ENC_PIN_A  2
-#define ENC_PIN_B  3
+#define ENC_PIN_A   2
+#define ENC_PIN_B   3
 #define ENC_BTN_PIN 4
 
 // Led light output
 #define OUTPUT_PIN 5
+//#define OUTPUT_PIN 9
 
 // Debug mode
 // #define DEBUG
@@ -113,7 +114,7 @@ void encoderChange() {
 #define MIN_SPEED_CHANGE_4_STEP 1
 
 unsigned long lastOutUpdate;
-float         OutValue;
+float         outValue;
 
 float rotationsToDimSteps(int rotations, int d_ms) {
   if (0 == d_ms) {
@@ -134,7 +135,7 @@ void outputSetup() {
   analogWrite(OUTPUT_PIN, 0);
 
   lastOutUpdate = millis();
-  OutValue      = 0;
+  outValue      = 0;
 
 #ifdef DEBUG
   pinMode(12, OUTPUT);
@@ -147,9 +148,9 @@ void outputSetup() {
 void outputLoop() {
 #ifdef LEGACY_OUT
   if (counter < 10) {
-    OutValue = counter;
+    outValue = counter;
   } else {
-    OutValue = map(counter, 10, ENC_MAX_COUNT, 10, 255);
+    outValue = map(counter, 10, ENC_MAX_COUNT, 10, 255);
   }
 #else
   unsigned long d_ms      = (millis() - lastOutUpdate);
@@ -159,31 +160,31 @@ void outputLoop() {
     lastOutUpdate = millis();
     counter = 0;
     DEBUG_PRINT("[");
-    DEBUG_PRINT(OutValue);
+    DEBUG_PRINT(outValue);
     DEBUG_PRINT("] d_ms = ");
     DEBUG_PRINT(d_ms);
     DEBUG_PRINT(" t_counter = ");
     DEBUG_PRINT(t_counter);
     DEBUG_PRINT(" rot = ");
     DEBUG_PRINT(rotationsToDimSteps(t_counter, d_ms));
-    OutValue += rotationsToDimSteps(t_counter, d_ms);
+    outValue += rotationsToDimSteps(t_counter, d_ms);
     DEBUG_PRINT("[");
-    DEBUG_PRINT(OutValue);
+    DEBUG_PRINT(outValue);
     DEBUG_PRINTLN("]");
-    if (OutValue < 0) {
-      OutValue = 0;
-    } else if (OutValue > 255) {
-      OutValue = 255;
+    if (outValue < 0) {
+      outValue = 0;
+    } else if (outValue > 255) {
+      outValue = 255;
     }
   }
 #endif
 
 #ifdef DEBUG
-  digitalWrite(12, OutValue == 0);
-  digitalWrite(13, OutValue == 255);
+  digitalWrite(12, outValue == 0);
+  digitalWrite(13, outValue == 255);
 #endif
 
-  analogWrite(OUTPUT_PIN, OutValue);
+  analogWrite(OUTPUT_PIN, outValue);
 }
 
 
@@ -193,17 +194,96 @@ void outputLoop() {
 unsigned long lastBtnPress;
 int           lastBtnRead;
 int           lastBtnState;
+unsigned long lastBtnStateChange;
+int           btnFuncVal;
+
+#define BTN_FUNC_INTERVAL_MS      (100)
+#define BTN_DEBOUNCE_PERIOD_MS    (50)
+#define BTN_LONG_PRESS_PERIOD_MS  (1000)
+
+enum {
+  BTN_FUNC_UNINIT,
+  BTN_FUNC_READY,
+  BTN_FUNC_ACTIVE,
+  BTN_FUNC_LOW_RECRDED,
+} btnFuncStateMachine;
+
+void btnStateChange(int btnState) {
+  unsigned long diff = millis() - lastBtnStateChange;
+  
+  if (btnState == LOW) {
+    DEBUG_PRINTLN("Button pressed!");
+  } else {
+    if (diff > BTN_LONG_PRESS_PERIOD_MS) {
+      DEBUG_PRINTLN("Button long press released!");
+      // record low state
+      btnFuncVal = min(outValue, 1);
+      
+      // TODO - add feedback
+      
+    } else {
+      DEBUG_PRINTLN("Button short press released!");
+      DEBUG_PRINTLN(btnFuncStateMachine);
+      if (BTN_FUNC_READY == btnFuncStateMachine) {
+        // Start function
+        btnFuncStateMachine = BTN_FUNC_ACTIVE;
+      } else if (BTN_FUNC_ACTIVE == btnFuncStateMachine) {
+        // Pause function
+        btnFuncStateMachine = BTN_FUNC_READY;
+      } else {
+        // undefine - skeep
+      }
+    }
+  }
+
+  lastBtnStateChange = millis();
+}
+
+/**
+ * Botton function: 
+ * Long press  -> save current state as the target state (can't be zero)
+ * Short press -> start slowly change the state to the terget state
+ */
+void btnFuncLoop(void) {
+  static unsigned long lastIterTime = 0;
+
+  if (millis() - lastIterTime > BTN_FUNC_INTERVAL_MS){
+    lastIterTime = millis();
+  } else {
+    return;
+  }
+
+  if (BTN_FUNC_ACTIVE == btnFuncStateMachine) {
+    // perfotm botton single func step
+    if (btnFuncVal < outValue) {
+      outValue--;
+    } else if (outValue < btnFuncVal) {
+      outValue++;
+    } else {
+      // target achived -> exit botton function mode
+      btnFuncStateMachine = BTN_FUNC_READY;
+    }
+  }
+}
 
 void btnSetup() {
   pinMode(ENC_BTN_PIN, INPUT_PULLUP);
 
   // Read the initial state
-  lastBtnPress = millis();
-  lastBtnRead  = digitalRead(ENC_BTN_PIN);
-  lastBtnState = digitalRead(ENC_BTN_PIN);
+  lastBtnPress        = millis();
+  lastBtnRead         = digitalRead(ENC_BTN_PIN);
+  lastBtnState        = digitalRead(ENC_BTN_PIN);
+  lastBtnStateChange  = millis();
+
+  btnFuncStateMachine = BTN_FUNC_READY;
+  btnFuncVal          = 1;
 }
 
 void btnLoop() {
+
+  // execute the relevant mode
+  btnFuncLoop();
+  
   // Read the button state
   int btnState = digitalRead(ENC_BTN_PIN);
 
@@ -213,21 +293,14 @@ void btnLoop() {
     lastBtnRead = btnState;
   }
 
-  if (millis() - lastBtnPress < 50) {
-    // reed state may be unstable wait to see continuos signal 
+  if (millis() - lastBtnPress < BTN_DEBOUNCE_PERIOD_MS) {
+    // Debounce - reed state may be unstable wait to see continuos signal 
     return;
   }
 
   if (lastBtnState != btnState) {
     // button state has changed
-    if (btnState == LOW) {
-      // pressed
-      DEBUG_PRINTLN("Button pressed!");
-    } else {
-      // Released
-      DEBUG_PRINTLN("Button released!");
-    }
-
+    btnStateChange(btnState);
     lastBtnState = btnState;
   }
 }
@@ -237,8 +310,6 @@ void btnLoop() {
  ***************************/
 void setup() {
 #ifdef DEBUG
-  // Setup Serial Monitor
-  // Serial.begin(9600);
   Serial.begin(115200);
 #endif
 
