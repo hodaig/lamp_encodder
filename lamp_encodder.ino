@@ -9,11 +9,20 @@
 #define ENC_BTN_PIN 4
 
 // Led light output
-#define OUTPUT_PIN 5
-//#define OUTPUT_PIN 9
+#define OUTPUT_PIN 9
+
+// use timer directly (instead of analogWrite()) to get 16bit resolution PWM
+// Only pin 9 and 10 support 16bit
+#define USE_16BIT_PWM 1
+
+#ifdef USE_16BIT_PWM
+  analogWrite16(OUTPUT_PIN, outValue);
+#else // USE_16BIT_PWM
+  analogWrite(OUTPUT_PIN, outValue);
+#endif // USE_16BIT_PWM
 
 // Debug mode
-// #define DEBUG
+#define DEBUG
 
 #ifdef DEBUG
 #  define DEBUG_PRINTLN(_x) Serial.println(_x)
@@ -49,7 +58,7 @@ void encoderSetup() {
 }
 
 void encoderLoop() {
-  // TODO - reduce counter to avoid reading errors accumulate
+  // TODO - Optional, reduce counter to avoid reading errors accumulate
 }
 
 void encoderChange() {
@@ -106,12 +115,23 @@ void encoderChange() {
 /***************************
  * Output calculation
  ***************************/
-#define OUTPUT_REFRESH_RATE_MS 100
+#define OUTPUT_REFRESH_RATE_MS  200
+#ifdef USE_16BIT_PWM
+#define OUTPUT_MAX_VALUE        255*100 //0x7FFF
+#else // USE_16BIT_PWM
+#define OUTPUT_MAX_VALUE        255
+#endif // USE_16BIT_PWM
+#define OUTPUT_MIN_VALUE        0
 
-#define MAX_SPEED_STEPS_4_SEC 50
-#define MIN_SPEED_STEPS_4_SEC 10
+#define MAX_SPEED_STEPS_4_SEC 500
+#define MIN_SPEED_STEPS_4_SEC 60
+#ifdef USE_16BIT_PWM
+#define MAX_SPEED_CHANGE_4_STEP 3000
+#define MIN_SPEED_CHANGE_4_STEP 1
+#else // USE_16BIT_PWM
 #define MAX_SPEED_CHANGE_4_STEP 30
 #define MIN_SPEED_CHANGE_4_STEP 1
+#endif // USE_16BIT_PWM
 
 unsigned long lastOutUpdate;
 float         outValue;
@@ -132,7 +152,7 @@ float rotationsToDimSteps(int rotations, int d_ms) {
 
 void outputSetup() {
   pinMode(OUTPUT_PIN, OUTPUT);
-  analogWrite(OUTPUT_PIN, 0);
+  ANALOGWRITE(OUTPUT_PIN, 0);
 
   lastOutUpdate = millis();
   outValue      = 0;
@@ -143,6 +163,16 @@ void outputSetup() {
   pinMode(13, OUTPUT);
   analogWrite(13, 0);
 #endif
+}
+
+long safeAdd(long val1, long val2, long minVal, long maxVal) {
+  if ((maxVal - val1) < val2) {
+    return maxVal;
+  } else if (val2 < (minVal - val1)) {
+    return minVal;
+  } else {
+    return val1 + val2;
+  }
 }
 
 void outputLoop() {
@@ -157,8 +187,11 @@ void outputLoop() {
   // TODO - consider to fix the "encoder andvace by 2" in the encodder algorithem
   int           t_counter = counter / 2; // each physical encodder step produce 2 countable steps
   if (t_counter && d_ms > OUTPUT_REFRESH_RATE_MS) {
+    float stepsToChange = rotationsToDimSteps(t_counter, d_ms);
+    
     lastOutUpdate = millis();
     counter = 0;
+
     DEBUG_PRINT("[");
     DEBUG_PRINT(outValue);
     DEBUG_PRINT("] d_ms = ");
@@ -166,25 +199,25 @@ void outputLoop() {
     DEBUG_PRINT(" t_counter = ");
     DEBUG_PRINT(t_counter);
     DEBUG_PRINT(" rot = ");
-    DEBUG_PRINT(rotationsToDimSteps(t_counter, d_ms));
-    outValue += rotationsToDimSteps(t_counter, d_ms);
+    DEBUG_PRINT(stepsToChange);
+    outValue = safeAdd(outValue, stepsToChange, OUTPUT_MIN_VALUE, OUTPUT_MAX_VALUE);
     DEBUG_PRINT("[");
     DEBUG_PRINT(outValue);
     DEBUG_PRINTLN("]");
-    if (outValue < 0) {
-      outValue = 0;
-    } else if (outValue > 255) {
-      outValue = 255;
+    if (outValue < OUTPUT_MIN_VALUE) {
+      outValue = OUTPUT_MIN_VALUE;
+    } else if (outValue > OUTPUT_MAX_VALUE) {
+      outValue = OUTPUT_MAX_VALUE;
     }
   }
 #endif
 
 #ifdef DEBUG
-  digitalWrite(12, outValue == 0);
-  digitalWrite(13, outValue == 255);
+  digitalWrite(12, outValue == OUTPUT_MIN_VALUE);
+  digitalWrite(13, outValue == OUTPUT_MAX_VALUE);
 #endif
 
-  analogWrite(OUTPUT_PIN, outValue);
+  ANALOGWRITE(OUTPUT_PIN, outValue);
 }
 
 
@@ -197,7 +230,14 @@ int           lastBtnState;
 unsigned long lastBtnStateChange;
 int           btnFuncVal;
 
+#ifdef USE_16BIT_PWM
 #define BTN_FUNC_INTERVAL_MS      (100)
+#else // USE_16BIT_PWM
+#define BTN_FUNC_INTERVAL_MS      (10000)
+#endif // USE_16BIT_PWM
+
+#define BTN_FUNC_FULL_2_OFF_TIME_MS   (1*60*1000L)
+#define BTN_FUNC_ITER_SIZE            ((OUTPUT_MAX_VALUE * BTN_FUNC_INTERVAL_MS) / BTN_FUNC_FULL_2_OFF_TIME_MS)
 #define BTN_DEBOUNCE_PERIOD_MS    (50)
 #define BTN_LONG_PRESS_PERIOD_MS  (1000)
 
@@ -205,7 +245,6 @@ enum {
   BTN_FUNC_UNINIT,
   BTN_FUNC_READY,
   BTN_FUNC_ACTIVE,
-  BTN_FUNC_LOW_RECRDED,
 } btnFuncStateMachine;
 
 void btnStateChange(int btnState) {
@@ -217,9 +256,13 @@ void btnStateChange(int btnState) {
     if (diff > BTN_LONG_PRESS_PERIOD_MS) {
       DEBUG_PRINTLN("Button long press released!");
       // record low state
-      btnFuncVal = min(outValue, 1);
+      btnFuncVal = outValue;
       
       // TODO - add feedback
+      ANALOGWRITE(OUTPUT_PIN, OUTPUT_MAX_VALUE/2);
+      delay(100);
+      ANALOGWRITE(OUTPUT_PIN, OUTPUT_MIN_VALUE);
+      delay(100);
       
     } else {
       DEBUG_PRINTLN("Button short press released!");
@@ -247,19 +290,23 @@ void btnStateChange(int btnState) {
 void btnFuncLoop(void) {
   static unsigned long lastIterTime = 0;
 
-  if (millis() - lastIterTime > BTN_FUNC_INTERVAL_MS){
-    lastIterTime = millis();
-  } else {
+  if (millis() - lastIterTime < BTN_FUNC_INTERVAL_MS){
     return;
   }
+    lastIterTime = millis();
 
   if (BTN_FUNC_ACTIVE == btnFuncStateMachine) {
     // perfotm botton single func step
     if (btnFuncVal < outValue) {
-      outValue--;
+      DEBUG_PRINTLN("BTN --");
+      outValue = safeAdd(outValue, -BTN_FUNC_ITER_SIZE, btnFuncVal, OUTPUT_MAX_VALUE);
+      // outValue -= BTN_FUNC_ITER_SIZE;
     } else if (outValue < btnFuncVal) {
-      outValue++;
+      DEBUG_PRINTLN("BTN ++");
+      outValue = safeAdd(outValue, +BTN_FUNC_ITER_SIZE, OUTPUT_MIN_VALUE, btnFuncVal);
+      // outValue += BTN_FUNC_ITER_SIZE;
     } else {
+      DEBUG_PRINTLN("BTN done");
       // target achived -> exit botton function mode
       btnFuncStateMachine = BTN_FUNC_READY;
     }
@@ -312,7 +359,9 @@ void setup() {
 #ifdef DEBUG
   Serial.begin(115200);
 #endif
-
+#ifdef USE_16BIT_PWM
+  setupPWM16();
+#endif
   encoderSetup();
   outputSetup();
   btnSetup();
