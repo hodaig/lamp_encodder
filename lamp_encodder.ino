@@ -16,9 +16,9 @@
 #define USE_16BIT_PWM 1
 
 #ifdef USE_16BIT_PWM
-  analogWrite16(OUTPUT_PIN, outValue);
+#  define ANALOGWRITE(_pin, _val) analogWrite16(_pin, _val);
 #else // USE_16BIT_PWM
-  analogWrite(OUTPUT_PIN, outValue);
+#  define ANALOGWRITE(_pin, _val) analogWrite(_pin, _val);
 #endif // USE_16BIT_PWM
 
 // Debug mode
@@ -36,6 +36,18 @@
  * Globals
  ***************************/
 int counter = 0;
+
+#define BTN_STATE_MACHINE_MAKE(_gpio, _duration) ((BtnState)(_gpio | (_duration << 1)))
+#define BTN_GET_GPIO(_state)                      ((_state & 0x1))
+#define BTN_GET_DURATION_SEC(_state)              (((_state >> 1) & 0xFF))
+typedef enum BtnState {
+  BTN_STATE_PRESS                           ,//= BTN_STATE_MACHINE_MAKE(BTN_GPIO_PRESS, 0),  
+  BTN_STATE_RELEASE                         ,//= BTN_STATE_MACHINE_MAKE(BTN_GPIO_RELEASE, 0),
+  BTN_STATE_LONGPRESS                       ,//= BTN_STATE_MACHINE_MAKE(BTN_GPIO_PRESS, 1),
+  BTN_STATE_LONGPRESS_RELEASE               ,//= BTN_STATE_MACHINE_MAKE(BTN_GPIO_RELEASE, 1),
+  BTN_STATE_LONGPRESS_10_SEC                ,//= BTN_STATE_MACHINE_MAKE(BTN_GPIO_PRESS, 10),
+  BTN_STATE_LONGPRESS_10_SEC_RELEASE        ,//= BTN_STATE_MACHINE_MAKE(BTN_GPIO_RELEASE, 10),
+} BtnState;
 
 /***************************
  * Encodder reading
@@ -100,9 +112,9 @@ void encoderChange() {
   counter += dir;
 
   if (last_enc_state != cur_enc_state) {
-    DEBUG_PRINT(counter);
-    DEBUG_PRINT(" - ");
-    DEBUG_PRINTLN(cur_enc_state);
+//     DEBUG_PRINT(counter);
+//     DEBUG_PRINT(" - ");
+//     DEBUG_PRINTLN(cur_enc_state);
   } else {
     // TODO assert
   }
@@ -117,16 +129,16 @@ void encoderChange() {
  ***************************/
 #define OUTPUT_REFRESH_RATE_MS  200
 #ifdef USE_16BIT_PWM
-#define OUTPUT_MAX_VALUE        255*100 //0x7FFF
+#define OUTPUT_MAX_VALUE        255*100L //0x7FFF
 #else // USE_16BIT_PWM
 #define OUTPUT_MAX_VALUE        255
 #endif // USE_16BIT_PWM
 #define OUTPUT_MIN_VALUE        0
 
-#define MAX_SPEED_STEPS_4_SEC 500
-#define MIN_SPEED_STEPS_4_SEC 60
+#define MAX_SPEED_STEPS_4_SEC 60
+#define MIN_SPEED_STEPS_4_SEC 5
 #ifdef USE_16BIT_PWM
-#define MAX_SPEED_CHANGE_4_STEP 3000
+#define MAX_SPEED_CHANGE_4_STEP 1000
 #define MIN_SPEED_CHANGE_4_STEP 1
 #else // USE_16BIT_PWM
 #define MAX_SPEED_CHANGE_4_STEP 30
@@ -134,9 +146,9 @@ void encoderChange() {
 #endif // USE_16BIT_PWM
 
 unsigned long lastOutUpdate;
-float         outValue;
+long          outValue;
 
-float rotationsToDimSteps(int rotations, int d_ms) {
+long rotationsToDimSteps(int rotations, int d_ms) {
   if (0 == d_ms) {
     d_ms = 1;
   }
@@ -144,8 +156,8 @@ float rotationsToDimSteps(int rotations, int d_ms) {
 	if (speed_sec > MAX_SPEED_STEPS_4_SEC) { speed_sec = MAX_SPEED_STEPS_4_SEC; }
 	if (speed_sec < MIN_SPEED_STEPS_4_SEC) { speed_sec = MIN_SPEED_STEPS_4_SEC; }
 	
-	int factor = map(speed_sec, MIN_SPEED_STEPS_4_SEC, MAX_SPEED_STEPS_4_SEC, MIN_SPEED_CHANGE_4_STEP, MAX_SPEED_CHANGE_4_STEP);
-	float change = factor * rotations;
+	long factor = map(speed_sec, MIN_SPEED_STEPS_4_SEC, MAX_SPEED_STEPS_4_SEC, MIN_SPEED_CHANGE_4_STEP, MAX_SPEED_CHANGE_4_STEP);
+	long change = factor * rotations;
 	
 	return change;
 }
@@ -187,7 +199,7 @@ void outputLoop() {
   // TODO - consider to fix the "encoder andvace by 2" in the encodder algorithem
   int           t_counter = counter / 2; // each physical encodder step produce 2 countable steps
   if (t_counter && d_ms > OUTPUT_REFRESH_RATE_MS) {
-    float stepsToChange = rotationsToDimSteps(t_counter, d_ms);
+    long stepsToChange = rotationsToDimSteps(t_counter, d_ms);
     
     lastOutUpdate = millis();
     counter = 0;
@@ -227,19 +239,20 @@ void outputLoop() {
 unsigned long lastBtnPress;
 int           lastBtnRead;
 int           lastBtnState;
-unsigned long lastBtnStateChange;
 int           btnFuncVal;
 
 #ifdef USE_16BIT_PWM
-#define BTN_FUNC_INTERVAL_MS      (100)
+#define BTN_FUNC_INTERVAL_MS      (100L)
 #else // USE_16BIT_PWM
 #define BTN_FUNC_INTERVAL_MS      (10000)
 #endif // USE_16BIT_PWM
 
-#define BTN_FUNC_FULL_2_OFF_TIME_MS   (1*60*1000L)
-#define BTN_FUNC_ITER_SIZE            ((OUTPUT_MAX_VALUE * BTN_FUNC_INTERVAL_MS) / BTN_FUNC_FULL_2_OFF_TIME_MS)
-#define BTN_DEBOUNCE_PERIOD_MS    (50)
-#define BTN_LONG_PRESS_PERIOD_MS  (1000)
+#define BTN_FUNC_FULL_2_OFF_TIME_MS     (1*60*1000L)
+#define BTN_FUNC_ITER_SIZE              ((OUTPUT_MAX_VALUE * BTN_FUNC_INTERVAL_MS) / BTN_FUNC_FULL_2_OFF_TIME_MS)
+#define BTN_DEBOUNCE_PERIOD_MS          (50)
+#define BTN_1_SECOND_IN_MS              (1000)
+#define BTN_GPIO_PRESS                  (0 /*LOW*/)
+#define BTN_GPIO_RELEASE                (!BTN_GPIO_PRESS)
 
 enum {
   BTN_FUNC_UNINIT,
@@ -247,24 +260,13 @@ enum {
   BTN_FUNC_ACTIVE,
 } btnFuncStateMachine;
 
-void btnStateChange(int btnState) {
-  unsigned long diff = millis() - lastBtnStateChange;
-  
-  if (btnState == LOW) {
-    DEBUG_PRINTLN("Button pressed!");
-  } else {
-    if (diff > BTN_LONG_PRESS_PERIOD_MS) {
-      DEBUG_PRINTLN("Button long press released!");
-      // record low state
-      btnFuncVal = outValue;
-      
-      // TODO - add feedback
-      ANALOGWRITE(OUTPUT_PIN, OUTPUT_MAX_VALUE/2);
-      delay(100);
-      ANALOGWRITE(OUTPUT_PIN, OUTPUT_MIN_VALUE);
-      delay(100);
-      
-    } else {
+void btnStateChange(BtnState btnState) {
+
+  switch (btnState) {
+    case BTN_STATE_PRESS:
+      DEBUG_PRINTLN("Button pressed!");
+      break;
+    case BTN_STATE_RELEASE:
       DEBUG_PRINTLN("Button short press released!");
       DEBUG_PRINTLN(btnFuncStateMachine);
       if (BTN_FUNC_READY == btnFuncStateMachine) {
@@ -276,10 +278,28 @@ void btnStateChange(int btnState) {
       } else {
         // undefine - skeep
       }
-    }
+      break;
+    case BTN_STATE_LONGPRESS:
+    case BTN_STATE_LONGPRESS_10_SEC:
+      DEBUG_PRINTLN("Button long press!");
+      // Long press feedback
+      ANALOGWRITE(OUTPUT_PIN, OUTPUT_MAX_VALUE/2);
+      delay(100);
+      ANALOGWRITE(OUTPUT_PIN, OUTPUT_MIN_VALUE);
+      delay(100);
+      break;
+    case BTN_STATE_LONGPRESS_RELEASE:
+      DEBUG_PRINTLN("Button long press released!");
+      // record low state
+      btnFuncVal = outValue;
+    break;
+    case BTN_STATE_LONGPRESS_10_SEC_RELEASE:
+      DEBUG_PRINTLN("Button 10 long press released!");
+      // TODO
+    break;
+    default:
+      break;
   }
-
-  lastBtnStateChange = millis();
 }
 
 /**
@@ -320,36 +340,49 @@ void btnSetup() {
   lastBtnPress        = millis();
   lastBtnRead         = digitalRead(ENC_BTN_PIN);
   lastBtnState        = digitalRead(ENC_BTN_PIN);
-  lastBtnStateChange  = millis();
 
   btnFuncStateMachine = BTN_FUNC_READY;
   btnFuncVal          = 1;
 }
 
 void btnLoop() {
+  static BtnState btnStateMachine = BTN_STATE_RELEASE;
+  bool stateChanged = false;
 
   // execute the relevant mode
   btnFuncLoop();
   
-  // Read the button state
-  int btnState = digitalRead(ENC_BTN_PIN);
+  // Read the button state and avoid debouncing
+  int btnGpioState = digitalRead(ENC_BTN_PIN);
 
-  if (btnState != lastBtnRead) {
-    // Remember last button event
+  if (btnGpioState != lastBtnRead) {
+    // Reset debounce counter
     lastBtnPress = millis();
-    lastBtnRead = btnState;
+    lastBtnRead = btnGpioState;
   }
 
-  if (millis() - lastBtnPress < BTN_DEBOUNCE_PERIOD_MS) {
+  unsigned long diff = millis() - lastBtnPress;
+  if (diff < BTN_DEBOUNCE_PERIOD_MS) {
     // Debounce - reed state may be unstable wait to see continuos signal 
     return;
   }
 
-  if (lastBtnState != btnState) {
-    // button state has changed
-    btnStateChange(btnState);
-    lastBtnState = btnState;
+  if (BTN_GET_GPIO(btnStateMachine) != btnGpioState) {
+    btnStateMachine = BTN_STATE_MACHINE_MAKE(btnGpioState, BTN_GET_DURATION_SEC(btnStateMachine));
+    btnStateChange(btnStateMachine);
+    btnStateMachine = BTN_STATE_MACHINE_MAKE(btnGpioState, 0);
   }
+  else if (BTN_GPIO_PRESS == BTN_GET_GPIO(btnStateMachine) &&
+           BTN_GPIO_PRESS == btnGpioState) {
+    if (diff > 10 * BTN_1_SECOND_IN_MS && 10 > BTN_GET_DURATION_SEC(btnStateMachine)) {
+      btnStateMachine = BTN_STATE_LONGPRESS_10_SEC;
+      btnStateChange(btnStateMachine);
+    } else if (diff > BTN_1_SECOND_IN_MS && 0 == BTN_GET_DURATION_SEC(btnStateMachine)) {
+      btnStateMachine = BTN_STATE_LONGPRESS;
+      btnStateChange(btnStateMachine);
+    } 
+  }
+
 }
 
 /***************************
